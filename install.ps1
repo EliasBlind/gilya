@@ -3,10 +3,7 @@ $ErrorActionPreference = 'Stop'
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $src = Join-Path (Join-Path $scriptDir 'src') 'main.cpp'
-if (-not (Test-Path $src)) {
-    Write-Error "cannot find src\main.cpp (looked at $src)"
-    exit 1
-}
+if (-not (Test-Path $src)) { Write-Error "cannot find src\main.cpp (looked at $src)"; exit 1 }
 
 $cxx = $null
 foreach ($c in @('g++', 'clang++', 'cl')) {
@@ -14,7 +11,7 @@ foreach ($c in @('g++', 'clang++', 'cl')) {
 }
 if (-not $cxx) {
     Write-Error "No C++ compiler found. Install one of:
-  - MSVC Build Tools, then run this from 'Developer PowerShell for VS' (gives 'cl')
+  - MSVC Build Tools, then run from 'Developer PowerShell for VS' (gives 'cl')
   - MSYS2/MinGW-w64 ('g++') or LLVM ('clang++'), added to PATH"
     exit 1
 }
@@ -43,13 +40,6 @@ if (($userPath -split ';') -notcontains $installDir) {
     Write-Host "Added $installDir to user PATH (restart the terminal to pick it up)."
 }
 
-if (-not (Test-Path $PROFILE)) { New-Item -ItemType File -Force -Path $PROFILE | Out-Null }
-Copy-Item $PROFILE "$PROFILE.gilya.bak" -Force
-
-$profileText = Get-Content -Raw -Path $PROFILE -ErrorAction SilentlyContinue
-if ($null -eq $profileText) { $profileText = '' }
-$profileText = [regex]::Replace($profileText, '(?s)# >>> gilya >>>.*?# <<< gilya <<<\r?\n?', '')
-
 $block = @'
 # >>> gilya >>>
 if (Get-Module -ListAvailable PSReadLine) {
@@ -61,9 +51,43 @@ if (Get-Module -ListAvailable PSReadLine) {
 # <<< gilya <<<
 '@
 
-$profileText = ($profileText.TrimEnd() + "`r`n" + $block + "`r`n").TrimStart("`r", "`n")
-Set-Content -Path $PROFILE -Value $profileText -Encoding UTF8
-Write-Host "Configured $PROFILE  (backup: $PROFILE.gilya.bak)"
+function Set-GilyaBlock([string]$path, [string]$text) {
+    $dir = Split-Path $path -Parent
+    if ($dir -and -not (Test-Path $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
+    if (-not (Test-Path $path)) { New-Item -ItemType File -Force -Path $path | Out-Null }
+    Copy-Item $path "$path.gilya.bak" -Force
+    $t = Get-Content -Raw -Path $path -ErrorAction SilentlyContinue
+    if ($null -eq $t) { $t = '' }
+    $t = [regex]::Replace($t, '(?s)# >>> gilya >>>.*?# <<< gilya <<<\r?\n?', '')
+    $t = ($t.TrimEnd() + "`r`n" + $text + "`r`n").TrimStart("`r", "`n")
+    Set-Content -Path $path -Value $t -Encoding UTF8
+    Write-Host "  configured $path"
+}
+
+$docs = [Environment]::GetFolderPath('MyDocuments')
+$targets = [System.Collections.Generic.List[string]]::new()
+$targets.Add((Join-Path $docs 'PowerShell\profile.ps1'))        # PowerShell 7
+$targets.Add((Join-Path $docs 'WindowsPowerShell\profile.ps1')) # PowerShell 5
+
+if ($PROFILE.CurrentUserAllHosts) { $targets.Add($PROFILE.CurrentUserAllHosts) }
+foreach ($p in ($targets | Select-Object -Unique)) { Set-GilyaBlock $p $block }
+
+$psrlDir = Join-Path $env:APPDATA 'Microsoft\Windows\PowerShell\PSReadLine'
+try {
+    $hp = (Get-PSReadLineOption).HistorySavePath
+    if ($hp) { $psrlDir = Split-Path $hp -Parent }
+} catch {}
+if (Test-Path $psrlDir) {
+    Get-ChildItem -Path $psrlDir -Filter '*_history.txt' -ErrorAction SilentlyContinue | ForEach-Object {
+        Copy-Item $_.FullName "$($_.FullName).gilya.bak" -Force
+        (Get-Content -LiteralPath $_.FullName) |
+            Where-Object { $_ -notmatch '^\s*gilya(\s|$)' } |
+            Set-Content -LiteralPath $_.FullName -Encoding UTF8
+        Write-Host "  scrubbed $($_.Name)"
+    }
+}
 
 Write-Host ""
-Write-Host "Done. Open a NEW PowerShell window, then check:  Get-Command gilya ; gilya"
+Write-Host "Done. From now on gilya is never recorded in PowerShell history."
+Write-Host "Restart PowerShell / VS Code to drop the current session's old entries."
+Write-Host "(cmd.exe does not persist history between sessions, so nothing to do there.)"
